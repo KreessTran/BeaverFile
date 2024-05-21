@@ -1,116 +1,256 @@
 import os
 import sys
-import tkinter as tk
-from tkinter import filedialog
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.backends import default_backend
+import hashlib
+from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QPushButton, QLabel, QLineEdit, QFileDialog, QMessageBox)
+from PyQt5.QtGui import QFont, QDragEnterEvent, QDropEvent
+from PyQt5.QtCore import Qt
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.backends import default_backend
+from argon2.low_level import hash_secret_raw, Type
 
-def derive_key(password: bytes, salt: bytes) -> bytes:
-    """Derive a cryptographic key from a password."""
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=100000,
-        backend=default_backend()
-    )
-    return kdf.derive(password)
+SALT_LENGTH = 16
+IV_LENGTH = 12
+TAG_LENGTH = 16
+AES_KEY_LENGTH = 32
 
-def encrypt(file_path: str, password: str) -> bytes:
-    """Encrypt a file using AES encryption."""
-    try:
-        salt = os.urandom(16)
-        key = derive_key(password.encode(), salt)
-        
-        with open(file_path, "rb") as file:
-            plaintext = file.read()
-        
-        padder = padding.PKCS7(algorithms.AES.block_size).padder()
-        padded_plaintext = padder.update(plaintext) + padder.finalize()
-        
-        iv = os.urandom(12)
-        encryptor = Cipher(
-            algorithms.AES(key),
-            modes.GCM(iv),
-            backend=default_backend()
-        ).encryptor()
-        
-        ciphertext = encryptor.update(padded_plaintext) + encryptor.finalize()
-        return salt + iv + ciphertext + encryptor.tag
-    except Exception as e:
-        print(f"Error: {e}")
-        return None
+class FileEncryptionTool(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.initUI()
 
-def decrypt(ciphertext: bytes, password: str, output_path: str) -> None:
-    """Decrypt a file encrypted by the above function."""
-    try:
-        salt = ciphertext[:16]
-        iv = ciphertext[16:28]
-        tag = ciphertext[-16:]
-        encrypted_message = ciphertext[28:-16]
-        key = derive_key(password.encode(), salt)
-        
-        decryptor = Cipher(
-            algorithms.AES(key),
-            modes.GCM(iv, tag),
-            backend=default_backend()
-        ).decryptor()
-        
-        padded_plaintext = decryptor.update(encrypted_message) + decryptor.finalize()
-        unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
-        plaintext = unpadder.update(padded_plaintext) + unpadder.finalize()
-        
-        with open(output_path, 'wb') as f:
-            f.write(plaintext)
-        print(f"Decrypted file saved as {output_path}")
-    except Exception as e:
-        print(f"Error: {e}")
+    def initUI(self):
+        self.setWindowTitle('File Encryption Tool')
+        self.setGeometry(100, 100, 500, 300)
+        self.setStyleSheet("background-color: #2e2e2e; color: white;")
+        self.setAcceptDrops(True)  # Enable drag-and-drop
 
-def load_file(entry):
-    filepath = filedialog.askopenfilename()
-    entry.delete(0, tk.END)
-    entry.insert(0, filepath)
+        layout = QVBoxLayout()
 
-def encrypt_file(path_entry, password_entry):
-    file_path = path_entry.get()
-    password = password_entry.get()
-    encrypted_data = encrypt(file_path, password)
-    if encrypted_data:
-        encrypted_file_path = file_path + ".enc"
-        with open(encrypted_file_path, 'wb') as f:
-            f.write(encrypted_data)
-        print(f"Encrypted file saved as {encrypted_file_path}")
+        self.instruction_label = QLabel("Browse or drag and drop a file to encrypt/decrypt")
+        self.instruction_label.setFont(QFont('Arial', 12))
+        self.instruction_label.setStyleSheet("color: white;")
+        self.instruction_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.instruction_label)
 
-def decrypt_file(path_entry, password_entry):
-    file_path = path_entry.get()
-    password = password_entry.get()
-    output_file = file_path.rstrip(".enc") + ".dec"  # Default output file name if none provided
-    with open(file_path, 'rb') as f:
-        encrypted_data = f.read()
-    decrypt(encrypted_data, password, output_file)
+        self.file_label = QLabel("File Path:")
+        self.file_label.setFont(QFont('Arial', 12))
+        self.file_label.setStyleSheet("color: white;")
+        layout.addWidget(self.file_label)
 
-def create_gui():
-    app = tk.Tk()
-    app.title('File Encryption Tool')
+        self.file_path_entry = QLineEdit()
+        self.file_path_entry.setFont(QFont('Arial', 12))
+        self.file_path_entry.setStyleSheet("background-color: #4d4d4d; color: white; border-radius: 5px; padding: 5px;")
+        layout.addWidget(self.file_path_entry)
 
-    tk.Label(app, text="File Path:").pack()
-    file_path_entry = tk.Entry(app, width=50)
-    file_path_entry.pack()
+        self.browse_button = QPushButton("Browse")
+        self.browse_button.setFont(QFont('Arial', 10, QFont.Bold))
+        self.browse_button.setStyleSheet("""
+            QPushButton {
+                background-color: #b3b3b3;
+                color: white;
+                border-radius: 5px;
+                padding: 6px;
+            }
+            QPushButton:hover {
+                background-color: #2b70f0;
+            }
+        """)
+        self.browse_button.clicked.connect(self.load_file)
+        layout.addWidget(self.browse_button)
 
-    tk.Button(app, text="Browse", command=lambda: load_file(file_path_entry)).pack()
-    password_label = tk.Label(app, text="Password:")
-    password_label.pack()
-    password_entry = tk.Entry(app, show='*', width=30)
-    password_entry.pack()
+        self.password_label = QLabel("Password:")
+        self.password_label.setFont(QFont('Arial', 12))
+        self.password_label.setStyleSheet("color: white;")
+        layout.addWidget(self.password_label)
 
-    tk.Button(app, text="Encrypt", command=lambda: encrypt_file(file_path_entry, password_entry)).pack()
-    tk.Button(app, text="Decrypt", command=lambda: decrypt_file(file_path_entry, password_entry)).pack()
+        self.password_entry = QLineEdit()
+        self.password_entry.setFont(QFont('Arial', 12))
+        self.password_entry.setEchoMode(QLineEdit.Password)
+        self.password_entry.setStyleSheet("background-color: #4d4d4d; color: white; border-radius: 5px; padding: 5px;")
+        layout.addWidget(self.password_entry)
 
-    app.mainloop()
+        self.encrypt_button = QPushButton("Encrypt")
+        self.encrypt_button.setFont(QFont('Arial', 10, QFont.Bold))
+        self.encrypt_button.setStyleSheet("""
+            QPushButton {
+                background-color: #b3b3b3;
+                color: white;
+                border-radius: 5px;
+                padding: 6px;
+            }
+            QPushButton:hover {
+                background-color: #2b70f0;
+            }
+        """)
+        self.encrypt_button.clicked.connect(self.encrypt_file)
+        layout.addWidget(self.encrypt_button)
 
-if __name__ == "__main__":
-    create_gui()
+        self.decrypt_button = QPushButton("Decrypt")
+        self.decrypt_button.setFont(QFont('Arial', 10, QFont.Bold))
+        self.decrypt_button.setStyleSheet("""
+            QPushButton {
+                background-color: #b3b3b3;
+                color: white;
+                border-radius: 5px;
+                padding: 6px;
+            }
+            QPushButton:hover {
+                background-color: #2b70f0;
+            }
+        """)
+        self.decrypt_button.clicked.connect(self.decrypt_file)
+        layout.addWidget(self.decrypt_button)
+
+        self.quit_button = QPushButton("Quit")
+        self.quit_button.setFont(QFont('Arial', 10, QFont.Bold))
+        self.quit_button.setStyleSheet("""
+            QPushButton {
+                background-color: #b3b3b3;
+                color: white;
+                border-radius: 5px;
+                padding: 6px;
+            }
+            QPushButton:hover {
+                background-color: #2b70f0;
+            }
+        """)
+        self.quit_button.clicked.connect(self.close)
+        layout.addWidget(self.quit_button)
+
+        self.setLayout(layout)
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            self.file_path_entry.setStyleSheet("background-color: #d3d3d3; color: black; border-radius: 5px; padding: 5px;")  # Change appearance
+
+    def dragLeaveEvent(self, event):
+        self.file_path_entry.setStyleSheet("background-color: #4d4d4d; color: white; border-radius: 5px; padding: 5px;")  # Revert appearance
+
+    def dropEvent(self, event: QDropEvent):
+        self.file_path_entry.setStyleSheet("background-color: #4d4d4d; color: white; border-radius: 5px; padding: 5px;")  # Revert appearance
+        for url in event.mimeData().urls():
+            file_path = url.toLocalFile()
+            self.file_path_entry.setText(file_path)
+
+    def load_file(self):
+        options = QFileDialog.Options()
+        file_name, _ = QFileDialog.getOpenFileName(self, "Select a File", "", "All Files (*);;Python Files (*.py)", options=options)
+        if file_name:
+            self.file_path_entry.setText(file_name)
+
+    def encrypt_file(self):
+        file_path = self.file_path_entry.text()
+        password = self.password_entry.text()
+        if not self.validate_password(password):
+            QMessageBox.warning(self, "Weak Password", "Please use a stronger password.")
+            return
+        encrypted_data = self.encrypt(file_path, password)
+        if encrypted_data:
+            encrypted_file_path = file_path + ".enc"
+            with open(encrypted_file_path, 'wb') as f:
+                f.write(encrypted_data)
+            QMessageBox.information(self, "Success", f"Encrypted file saved as {encrypted_file_path}")
+        self.password_entry.clear()
+
+    def decrypt_file(self):
+        file_path = self.file_path_entry.text()
+        password = self.password_entry.text()
+        output_file = file_path.rstrip(".enc") + ".dec"
+        with open(file_path, 'rb') as f:
+            encrypted_data = f.read()
+        self.decrypt(encrypted_data, password, output_file)
+        self.password_entry.clear()
+        QMessageBox.information(self, "Success", f"Decrypted file saved as {output_file}")
+
+    def validate_password(self, password: str) -> bool:
+        """Validate the strength of the password."""
+        if len(password) < 8:
+            return False
+        if not any(char.isdigit() for char in password):
+            return False
+        if not any(char.isupper() for char in password):
+            return False
+        if not any(char.islower() for char in password):
+            return False
+        if not any(char in '!@#$%^&*()_+' for char in password):
+            return False
+        return True
+
+    def derive_key(self, password: bytes, salt: bytes) -> bytes:
+        return hash_secret_raw(
+            password,
+            salt,
+            time_cost=2,
+            memory_cost=102400,
+            parallelism=8,
+            hash_len=AES_KEY_LENGTH,
+            type=Type.I
+        )
+
+    def encrypt(self, file_path: str, password: str) -> bytes:
+        try:
+            salt = os.urandom(SALT_LENGTH)
+            key = self.derive_key(password.encode(), salt)
+            
+            with open(file_path, "rb") as file:
+                plaintext = file.read()
+
+            # Calculate file hash before encryption
+            file_hash = hashlib.sha256(plaintext).hexdigest()
+            
+            padder = padding.PKCS7(algorithms.AES.block_size).padder()
+            padded_plaintext = padder.update(plaintext) + padder.finalize()
+            
+            iv = os.urandom(IV_LENGTH)
+            encryptor = Cipher(
+                algorithms.AES(key),
+                modes.GCM(iv),
+                backend=default_backend()
+            ).encryptor()
+            
+            ciphertext = encryptor.update(padded_plaintext) + encryptor.finalize()
+            return salt + iv + ciphertext + encryptor.tag + file_hash.encode('utf-8')
+        except Exception as e:
+            print(f"Encryption Error: {e}")
+            return None
+
+    def decrypt(self, ciphertext: bytes, password: str, output_path: str) -> None:
+        try:
+            salt = ciphertext[:SALT_LENGTH]
+            iv = ciphertext[SALT_LENGTH:SALT_LENGTH + IV_LENGTH]
+            tag = ciphertext[-TAG_LENGTH-64:-64]
+            file_hash = ciphertext[-64:].decode('utf-8')
+            encrypted_message = ciphertext[SALT_LENGTH + IV_LENGTH:-TAG_LENGTH-64]
+            key = self.derive_key(password.encode(), salt)
+            
+            decryptor = Cipher(
+                algorithms.AES(key),
+                modes.GCM(iv, tag),
+                backend=default_backend()
+            ).decryptor()
+            
+            padded_plaintext = decryptor.update(encrypted_message) + decryptor.finalize()
+            unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+            plaintext = unpadder.update(padded_plaintext) + unpadder.finalize()
+
+            # Verify file integrity
+            if hashlib.sha256(plaintext).hexdigest() != file_hash:
+                QMessageBox.warning(self, "Integrity Check Failed", "The decrypted file's integrity check failed.")
+                return
+            
+            with open(output_path, 'wb') as f:
+                f.write(plaintext)
+            print(f"Decrypted file saved as {output_path}")
+        except Exception as e:
+            print(f"Decryption Error: {e}")
+
+def main():
+    app = QApplication(sys.argv)
+    ex = FileEncryptionTool()
+    ex.show()
+    sys.exit(app.exec_())
+
+if __name__ == '__main__':
+    main()
