@@ -153,16 +153,31 @@ class FileEncryptionTool(QWidget):
                 f.write(encrypted_data)
             QMessageBox.information(self, "Success", f"Encrypted file saved as {encrypted_file_path}")
         self.password_entry.clear()
+        self.file_path_entry.clear()  # Clear the file path entry
 
     def decrypt_file(self):
         file_path = self.file_path_entry.text()
         password = self.password_entry.text()
         output_file = file_path.rstrip(".enc") + ".dec"
-        with open(file_path, 'rb') as f:
-            encrypted_data = f.read()
-        self.decrypt(encrypted_data, password, output_file)
-        self.password_entry.clear()
-        QMessageBox.information(self, "Success", f"Decrypted file saved as {output_file}")
+        try:
+            with open(file_path, 'rb') as f:
+                encrypted_data = f.read()
+            
+            # Attempt to decrypt the data
+            self.decrypt(encrypted_data, password, output_file)
+            
+            # Clear entries after successful decryption
+            self.password_entry.clear()
+            self.file_path_entry.clear()
+            
+            QMessageBox.information(self, "Success", f"Decrypted file saved as {output_file}")
+        except Exception as e:
+            # Clear entries on failure
+            self.password_entry.clear()
+            self.file_path_entry.clear()
+            
+            # Show error message if decryption fails
+            QMessageBox.warning(self, "Decryption Failed", "Incorrect password or corrupted file.")
 
     def validate_password(self, password: str) -> bool:
         """Validate the strength of the password."""
@@ -237,14 +252,15 @@ class FileEncryptionTool(QWidget):
 
             # Verify file integrity
             if hashlib.sha256(plaintext).hexdigest() != file_hash:
-                QMessageBox.warning(self, "Integrity Check Failed", "The decrypted file's integrity check failed.")
-                return
+                raise ValueError("File integrity check failed")
             
             with open(output_path, 'wb') as f:
                 f.write(plaintext)
             print(f"Decrypted file saved as {output_path}")
         except Exception as e:
+            # Print decryption error for debugging
             print(f"Decryption Error: {e}")
+            raise
 
 def main():
     app = QApplication(sys.argv)
